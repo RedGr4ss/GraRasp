@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.grarasp</groupId>
+    <artifactId>GraRasp</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>GraRasp Root</name>
+
+    <modules>
+        <module>Grasp-spy</module>
+        <module>Grasp-core</module>
+        <module>Grasp-agent</module>
+        <module>Grasp-plugins</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <grarasp.version>1.0.0-SNAPSHOT</grarasp.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.grarasp</groupId>
+                <artifactId>Grasp-spy</artifactId>
+                <version>${grarasp.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.grarasp</groupId>
+                <artifactId>Grasp-core</artifactId>
+                <version>${grarasp.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.grarasp</groupId>
+                <artifactId>Grasp-agent</artifactId>
+                <version>${grarasp.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
