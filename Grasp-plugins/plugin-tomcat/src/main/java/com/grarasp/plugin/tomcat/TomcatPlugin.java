@@ -1,10 +1,7 @@
 package com.grarasp.plugin.tomcat;
 
 import com.grarasp.core.plugin.IPlugin;
-import javassist.ClassPool;
-import javassist.CtClass;
-import javassist.CtMethod;
-import javassist.LoaderClassPath;
+import javassist.*;
 
 import java.io.ByteArrayInputStream;
 import java.util.Arrays;
@@ -16,15 +13,20 @@ public class TomcatPlugin implements IPlugin {
     private static final String TARGET_PIPELINE = "org.apache.catalina.core.StandardPipeline";
     private static final String TARGET_WEBSOCKET = "org.apache.tomcat.websocket.server.WsServerContainer";
 
+    // [新增] 针对反射注册的防御目标
+    private static final String TARGET_FILTER_CONFIG = "org.apache.catalina.core.ApplicationFilterConfig";
+    private static final String TARGET_WRAPPER = "org.apache.catalina.core.StandardWrapper";
+
     @Override
     public Collection<String> getTargetClassNames() {
-        return Arrays.asList(TARGET_CONTEXT, TARGET_PIPELINE, TARGET_WEBSOCKET);
+        return Arrays.asList(
+                TARGET_CONTEXT, TARGET_PIPELINE, TARGET_WEBSOCKET,
+                TARGET_FILTER_CONFIG, TARGET_WRAPPER
+        );
     }
 
     @Override
     public byte[] transform(ClassLoader loader, String className, byte[] classfileBuffer) throws Exception {
-        // System.out.println("[TomcatPlugin] Processing: " + className); // 调试时可开启
-
         ClassPool cp = ClassPool.getDefault();
         if (loader != null) cp.appendClassPath(new LoaderClassPath(loader));
         CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
@@ -34,7 +36,13 @@ public class TomcatPlugin implements IPlugin {
         } else if (TARGET_PIPELINE.equals(className)) {
             hookStandardPipeline(cc);
         } else if (TARGET_WEBSOCKET.equals(className)) {
-            hookWsServerContainer(cc);
+            hookWsServerContainer(cc, cp);
+        }
+        // [新增] Hook 构造函数
+        else if (TARGET_FILTER_CONFIG.equals(className)) {
+            hookConstructor(cc, "config_create", "ApplicationFilterConfig");
+        } else if (TARGET_WRAPPER.equals(className)) {
+            hookConstructor(cc, "wrapper_create", "StandardWrapper");
         }
 
         byte[] byteCode = cc.toBytecode();
@@ -44,32 +52,62 @@ public class TomcatPlugin implements IPlugin {
 
     private void hookStandardContext(CtClass cc) {
         try {
-            cc.getDeclaredMethod("addFilterDef").insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_filter\", \"StandardContext\", \"addFilterDef\", new Object[]{$0, $1}); }");
-            cc.getDeclaredMethod("addChild").insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_servlet\", \"StandardContext\", \"addChild\", new Object[]{$0, $1}); }");
-            cc.getDeclaredMethod("addApplicationEventListener").insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_listener\", \"StandardContext\", \"addApplicationEventListener\", new Object[]{$0, $1}); }");
+            // 保持原有逻辑
+            insertSpy(cc, "addFilterDef", "memshell_filter", "StandardContext");
+            insertSpy(cc, "addChild", "memshell_servlet", "StandardContext");
+            insertSpy(cc, "addApplicationEventListener", "memshell_listener", "StandardContext");
         } catch (Exception e) {}
     }
 
     private void hookStandardPipeline(CtClass cc) {
         try {
-            cc.getDeclaredMethod("addValve").insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_valve\", \"StandardPipeline\", \"addValve\", new Object[]{$0, $1}); }");
+            insertSpy(cc, "addValve", "memshell_valve", "StandardPipeline");
         } catch (Exception e) {}
     }
 
-    private void hookWsServerContainer(CtClass cc) {
+    private void hookWsServerContainer(CtClass cc, ClassPool cp) {
         try {
-            // public void addEndpoint(ServerEndpointConfig sec)
-            CtMethod m = cc.getDeclaredMethod("addEndpoint", new CtClass[]{cp.get("javax.websocket.server.ServerEndpointConfig")});
-            if(m==null){
-                m = cc.getDeclaredMethod("addEndpoint", new CtClass[]{cp.get("jakarta.websocket.server.ServerEndpointConfig")});
+            CtClass paramClass = null;
+            String endpointConfigClass = "javax.websocket.server.ServerEndpointConfig";
+            try {
+                paramClass = cp.get(endpointConfigClass);
+            } catch (NotFoundException e) {
+                try {
+                    endpointConfigClass = "jakarta.websocket.server.ServerEndpointConfig";
+                    paramClass = cp.get(endpointConfigClass);
+                } catch (NotFoundException ex) {
+                    return; // 依赖缺失，跳过
+                }
             }
+            CtMethod m = cc.getDeclaredMethod("addEndpoint", new CtClass[]{paramClass});
             m.insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_websocket\", \"WsServerContainer\", \"addEndpoint\", new Object[]{$0, $1}); }");
-            System.out.println("[TomcatPlugin] Hook WsServerContainer.addEndpoint success!");
+            System.out.println("[TomcatPlugin] Hook WsServerContainer success!");
         } catch (Exception e) {
             System.err.println("[TomcatPlugin] Hook WebSocket failed: " + e.getMessage());
         }
     }
 
-    // 辅助获取 ClassPool (如果之前定义在外面，这里不需要重复)
-    private ClassPool cp = ClassPool.getDefault();
+    /**
+     * [新增] 通用的构造函数 Hook
+     */
+    private void hookConstructor(CtClass cc, String checkType, String targetName) {
+        try {
+            CtConstructor[] constructors = cc.getConstructors();
+            for (CtConstructor c : constructors) {
+                // $args 是参数数组，只要有人创建这个对象，就去检查
+                c.insertBefore("{ com.grarasp.spy.Spy.check(\"" + checkType + "\", \"" + targetName + "\", \"<init>\", $args); }");
+            }
+            System.out.println("[TomcatPlugin] Hook Constructor success: " + targetName);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // 辅助方法减少重复代码
+    private void insertSpy(CtClass cc, String methodName, String checkType, String targetName) {
+        try {
+            CtMethod m = cc.getDeclaredMethod(methodName);
+            m.insertBefore("{ com.grarasp.spy.Spy.check(\"" + checkType + "\", \"" + targetName + "\", \"" + methodName + "\", new Object[]{$0, $1}); }");
+        } catch (Exception e) {}
+    }
 }
