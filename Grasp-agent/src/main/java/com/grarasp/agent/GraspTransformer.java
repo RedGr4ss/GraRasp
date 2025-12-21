@@ -23,7 +23,7 @@ public class GraspTransformer implements ClassFileTransformer {
 
         System.out.println("[GraRasp] Loading plugins via SPI...");
         for (IPlugin plugin : plugins) {
-            // [升级逻辑] 遍历插件定义的所有目标类
+            //  遍历插件定义的所有目标类
             for (String targetClass : plugin.getTargetClassNames()) {
                 System.out.println("[GraRasp] >>> Registering Plugin: " + plugin.getClass().getSimpleName() + " -> " + targetClass);
                 pluginMap.put(targetClass, plugin);

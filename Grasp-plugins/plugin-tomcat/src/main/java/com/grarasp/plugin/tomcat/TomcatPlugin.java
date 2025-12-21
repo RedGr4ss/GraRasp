@@ -14,7 +14,6 @@ public class TomcatPlugin implements IPlugin {
 
     private static final String TARGET_CONTEXT = "org.apache.catalina.core.StandardContext";
     private static final String TARGET_PIPELINE = "org.apache.catalina.core.StandardPipeline";
-    // [新增] WebSocket 容器类
     private static final String TARGET_WEBSOCKET = "org.apache.tomcat.websocket.server.WsServerContainer";
 
     @Override
@@ -35,7 +34,6 @@ public class TomcatPlugin implements IPlugin {
         } else if (TARGET_PIPELINE.equals(className)) {
             hookStandardPipeline(cc);
         } else if (TARGET_WEBSOCKET.equals(className)) {
-            // [新增] 处理 WebSocket
             hookWsServerContainer(cc);
         }
 
@@ -58,11 +56,13 @@ public class TomcatPlugin implements IPlugin {
         } catch (Exception e) {}
     }
 
-    // [新增] Hook WebSocket 注册
     private void hookWsServerContainer(CtClass cc) {
         try {
             // public void addEndpoint(ServerEndpointConfig sec)
             CtMethod m = cc.getDeclaredMethod("addEndpoint", new CtClass[]{cp.get("javax.websocket.server.ServerEndpointConfig")});
+            if(m==null){
+                m = cc.getDeclaredMethod("addEndpoint", new CtClass[]{cp.get("jakarta.websocket.server.ServerEndpointConfig")});
+            }
             m.insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_websocket\", \"WsServerContainer\", \"addEndpoint\", new Object[]{$0, $1}); }");
             System.out.println("[TomcatPlugin] Hook WsServerContainer.addEndpoint success!");
         } catch (Exception e) {

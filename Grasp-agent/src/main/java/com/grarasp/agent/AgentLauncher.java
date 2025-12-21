@@ -22,10 +22,6 @@ public class AgentLauncher {
         System.out.println("                 GraRasp Agent V1.0.0                  ");
 
         try {
-            // =============================================================
-            // [关键修复] 将 Agent Jar 添加到 Bootstrap ClassLoader 搜索路径
-            // 这样 java.lang.ProcessBuilder 才能访问到 com.grarasp.spy.Spy
-            // =============================================================
             File agentJarFile = getAgentJarFile();
             if (agentJarFile != null) {
                 System.out.println("[GraRasp] Append to bootstrap: " + agentJarFile.getAbsolutePath());
