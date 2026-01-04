@@ -12,8 +12,6 @@ public class TomcatPlugin implements IPlugin {
     private static final String TARGET_CONTEXT = "org.apache.catalina.core.StandardContext";
     private static final String TARGET_PIPELINE = "org.apache.catalina.core.StandardPipeline";
     private static final String TARGET_WEBSOCKET = "org.apache.tomcat.websocket.server.WsServerContainer";
-
-    // [新增] 针对反射注册的防御目标
     private static final String TARGET_FILTER_CONFIG = "org.apache.catalina.core.ApplicationFilterConfig";
     private static final String TARGET_WRAPPER = "org.apache.catalina.core.StandardWrapper";
 
@@ -33,12 +31,13 @@ public class TomcatPlugin implements IPlugin {
 
         if (TARGET_CONTEXT.equals(className)) {
             hookStandardContext(cc);
+            // [核心] Hook 启动流程，主动注册 Context
+            hookContextStart(cc);
         } else if (TARGET_PIPELINE.equals(className)) {
             hookStandardPipeline(cc);
         } else if (TARGET_WEBSOCKET.equals(className)) {
             hookWsServerContainer(cc, cp);
         }
-        // [新增] Hook 构造函数
         else if (TARGET_FILTER_CONFIG.equals(className)) {
             hookConstructor(cc, "config_create", "ApplicationFilterConfig");
         } else if (TARGET_WRAPPER.equals(className)) {
@@ -50,9 +49,23 @@ public class TomcatPlugin implements IPlugin {
         return byteCode;
     }
 
+    /**
+     * [新增] Hook StandardContext.startInternal
+     * 作用：当 Context 启动时，主动将其注册到 GraspCore
+     */
+    private void hookContextStart(CtClass cc) {
+        try {
+            CtMethod m = cc.getDeclaredMethod("startInternal");
+            // 调用 Spy 发送事件，携带当前 Context 对象 ($0)
+            m.insertAfter("{ com.grarasp.spy.Spy.check(\"context_start\", \"StandardContext\", \"startInternal\", new Object[]{$0}); }");
+            System.out.println("[TomcatPlugin] Hook startInternal success!");
+        } catch (Exception e) {
+            System.err.println("[TomcatPlugin] Hook startInternal failed: " + e.getMessage());
+        }
+    }
+
     private void hookStandardContext(CtClass cc) {
         try {
-            // 保持原有逻辑
             insertSpy(cc, "addFilterDef", "memshell_filter", "StandardContext");
             insertSpy(cc, "addChild", "memshell_servlet", "StandardContext");
             insertSpy(cc, "addApplicationEventListener", "memshell_listener", "StandardContext");
@@ -87,14 +100,10 @@ public class TomcatPlugin implements IPlugin {
         }
     }
 
-    /**
-     * [新增] 通用的构造函数 Hook
-     */
     private void hookConstructor(CtClass cc, String checkType, String targetName) {
         try {
             CtConstructor[] constructors = cc.getConstructors();
             for (CtConstructor c : constructors) {
-                // $args 是参数数组，只要有人创建这个对象，就去检查
                 c.insertBefore("{ com.grarasp.spy.Spy.check(\"" + checkType + "\", \"" + targetName + "\", \"<init>\", $args); }");
             }
             System.out.println("[TomcatPlugin] Hook Constructor success: " + targetName);
@@ -103,7 +112,6 @@ public class TomcatPlugin implements IPlugin {
         }
     }
 
-    // 辅助方法减少重复代码
     private void insertSpy(CtClass cc, String methodName, String checkType, String targetName) {
         try {
             CtMethod m = cc.getDeclaredMethod(methodName);

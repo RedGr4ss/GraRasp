@@ -19,16 +19,13 @@ public class GraspTransformer implements ClassFileTransformer {
     private final Map<String, IPlugin> pluginMap = new HashMap<>();
 
     public GraspTransformer() {
+        // ... (保持原有的插件加载逻辑) ...
         ServiceLoader<IPlugin> plugins = ServiceLoader.load(IPlugin.class);
-
-        System.out.println("[GraRasp] Loading plugins via SPI...");
         for (IPlugin plugin : plugins) {
             for (String targetClass : plugin.getTargetClassNames()) {
-                System.out.println("[GraRasp] >>> Registering Plugin: " + plugin.getClass().getSimpleName() + " -> " + targetClass);
                 pluginMap.put(targetClass, plugin);
             }
         }
-        System.out.println("[GraRasp] Plugins loaded. Total hook targets: " + pluginMap.size());
     }
 
     @Override
@@ -41,17 +38,17 @@ public class GraspTransformer implements ClassFileTransformer {
         if (className == null) return null;
         String dotClassName = className.replace('/', '.');
 
-        // [新增策略] Hook java.lang.ClassLoader (防御所有类型的类加载)
+        // [核心 Hook] 防御所有类加载 (内存马注入)
         if ("java.lang.ClassLoader".equals(dotClassName)) {
             return hookClassLoader(loader, classfileBuffer);
         }
 
-        // 1. ProcessBuilder RCE (内置保留)
+        // ... (ProcessBuilder Hook) ...
         if ("java.lang.ProcessBuilder".equals(dotClassName)) {
             return hookProcessBuilder(loader, classfileBuffer);
         }
 
-        // 2. 插件分发
+        // 插件分发
         IPlugin plugin = pluginMap.get(dotClassName);
         if (plugin != null) {
             try {
@@ -63,42 +60,45 @@ public class GraspTransformer implements ClassFileTransformer {
         return null;
     }
 
-    /**
-     * Hook java.lang.ClassLoader.defineClass
-     */
     private byte[] hookClassLoader(ClassLoader loader, byte[] classfileBuffer) {
         try {
+            // 注意: ClassLoader 是由 Bootstrap 加载的，loader 参数通常为 null
             ClassPool cp = ClassPool.getDefault();
-            // ClassLoader 是核心类，通常由 Bootstrap 加载，不需要 appendLoaderClassPath
             CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
 
-            // defineClass 有多个重载，我们 Hook 核心的 protected final Class defineClass(String name, byte[] b, int off, int len)
-            CtMethod m = cc.getDeclaredMethod("defineClass", new CtClass[]{
+            // Hook 核心方法: protected final Class defineClass(String name, byte[] b, int off, int len)
+            // 这是所有自定义 ClassLoader (包括 JSP 的 ClassDefiner) 最终必须调用的入口
+            CtClass[] params = new CtClass[]{
                     cp.get("java.lang.String"),
                     cp.get("byte[]"),
                     CtClass.intType,
                     CtClass.intType
-            });
+            };
 
-            // 插入检测逻辑：将当前线程栈和类字节码传给 Core 分析
-            // $1 是 name, $2 是 byte[] b
+            CtMethod m = cc.getDeclaredMethod("defineClass", params);
+
+            // 插入检测逻辑: 将字节码 ($2) 传给 Spy
+            // 使用 ISO-8859-1 解码的逻辑已在 Core 中实现，这里只负责透传
             String code = "{" +
                     "   StackTraceElement[] stack = java.lang.Thread.currentThread().getStackTrace();" +
                     "   com.grarasp.spy.Spy.check(\"class_define\", $1, \"defineClass\", new Object[]{stack, $2});" +
                     "}";
+
             m.insertBefore(code);
 
             byte[] byteCode = cc.toBytecode();
             cc.detach();
-            System.out.println("[GraRasp] Hook java.lang.ClassLoader success!");
+            System.out.println("[GraRasp] ✅ Hooked java.lang.ClassLoader successfully!");
             return byteCode;
         } catch (Exception e) {
-            // defineClass 可能在某些 JVM 实现中是 native 的或者无法修改，这里仅做尝试
-            // System.err.println("[GraRasp] Hook ClassLoader failed: " + e.getMessage());
+            // 某些 JVM 实现可能不允许修改核心类，或者 javassist 找不到类
+            System.err.println("[GraRasp] ❌ Failed to hook ClassLoader: " + e.getMessage());
+            // e.printStackTrace(); // 调试时可打开
         }
         return null;
     }
 
+    // ... hookProcessBuilder 保持不变 ...
     private byte[] hookProcessBuilder(ClassLoader loader, byte[] classfileBuffer) {
         try {
             ClassPool cp = ClassPool.getDefault();
@@ -109,7 +109,7 @@ public class GraspTransformer implements ClassFileTransformer {
             byte[] byteCode = cc.toBytecode();
             cc.detach();
             return byteCode;
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) { }
         return null;
     }
 }
