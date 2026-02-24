@@ -1,0 +1,58 @@
+# GraRasp Configuration File v1.5.0
+# 将此文件放置在以下位置之一:
+# - 应用根目录/grarasp.yml
+# - 应用根目录/conf/grarasp.yml
+# - 应用根目录/config/grarasp.yml
+# - ~/.grarasp/grarasp.yml
+# 或通过 -Dgrarasp.config=/path/to/grarasp.yml 指定
+
+# 阻断模式: true=拦截攻击并自动清除高风险内存马, false=仅监控告警
+block_mode: true
+
+# 内存马巡检配置
+scan:
+  enabled: true
+  interval: 30000  # 毫秒
+  # 风险评分阈值 (0-100)
+  # risk_warn: 30      # 低风险告警阈值
+  # risk_block: 60     # 中高风险告警阈值
+  # risk_clean: 80     # 自动清除阈值 (需 block_mode=true)
+
+# 检测规则开关
+rules:
+  spel: true           # SpEL 表达式注入检测
+  classloader: true    # ClassLoader Hook (内存马防护)
+  runtime_exec: true   # Runtime.exec 命令执行检测
+  jndi: true           # JNDI 注入检测
+
+# 日志配置
+log:
+  level: INFO          # DEBUG, INFO, WARN, ERROR
+  file: null           # 日志文件路径，null 表示输出到控制台
+
+# 告警配置
+alert:
+  webhook: null        # Webhook URL，如: http://your-server/alert
+  # 告警 JSON 格式:
+  # {"level":"HIGH RISK","type":"Filter","name":"evilFilter","class":"com.evil.Shell","risk":85,"timestamp":1234567890}
+
+# 组件白名单 (Filter/Listener/Valve/Servlet 名称)
+whitelist:
+  components:
+    # 自定义白名单组件
+    # - myCustomFilter
+    # - com.mycompany.MyListener
+
+  # 类白名单前缀 (用于 ClassLoader 检测)
+  classes:
+    # - com.mycompany.
+
+# SpEL 检测配置 (可扩展危险类/方法)
+spel:
+  dangerous_classes:
+    # 额外的危险类
+    # - com.dangerous.EvilClass
+
+  dangerous_methods:
+    # 额外的危险方法
+    # - evilMethod

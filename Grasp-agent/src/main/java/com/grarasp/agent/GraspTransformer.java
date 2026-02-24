@@ -1,10 +1,13 @@
 package com.grarasp.agent;
 
+import com.grarasp.core.config.RaspConfig;
 import com.grarasp.core.plugin.IPlugin;
+import com.grarasp.core.util.ClassPoolManager;
+import com.grarasp.core.util.ErrorReporter;
 import javassist.ClassPool;
 import javassist.CtClass;
 import javassist.CtMethod;
-import javassist.LoaderClassPath;
+import javassist.CtConstructor;
 
 import java.io.ByteArrayInputStream;
 import java.lang.instrument.ClassFileTransformer;
@@ -19,7 +22,6 @@ public class GraspTransformer implements ClassFileTransformer {
     private final Map<String, IPlugin> pluginMap = new HashMap<>();
 
     public GraspTransformer() {
-        // ... (保持原有的插件加载逻辑) ...
         ServiceLoader<IPlugin> plugins = ServiceLoader.load(IPlugin.class);
         for (IPlugin plugin : plugins) {
             for (String targetClass : plugin.getTargetClassNames()) {
@@ -43,9 +45,24 @@ public class GraspTransformer implements ClassFileTransformer {
             return hookClassLoader(loader, classfileBuffer);
         }
 
-        // ... (ProcessBuilder Hook) ...
+        // [核心 Hook] ProcessBuilder 命令执行
         if ("java.lang.ProcessBuilder".equals(dotClassName)) {
             return hookProcessBuilder(loader, classfileBuffer);
+        }
+
+        // [核心 Hook] Runtime.exec 命令执行
+        if ("java.lang.Runtime".equals(dotClassName)) {
+            return hookRuntime(loader, classfileBuffer);
+        }
+
+        // [核心 Hook] JNDI 注入防护
+        if ("javax.naming.InitialContext".equals(dotClassName)) {
+            return hookInitialContext(loader, classfileBuffer);
+        }
+
+        // [核心 Hook] ScriptEngine 脚本执行
+        if ("javax.script.AbstractScriptEngine".equals(dotClassName)) {
+            return hookScriptEngine(loader, classfileBuffer);
         }
 
         // 插件分发
@@ -54,7 +71,8 @@ public class GraspTransformer implements ClassFileTransformer {
             try {
                 return plugin.transform(loader, dotClassName, classfileBuffer);
             } catch (Exception e) {
-                System.err.println("[GraRasp] Plugin transform failed: " + e.getMessage());
+                ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                    "Plugin transform failed for " + dotClassName, e);
             }
         }
         return null;
@@ -62,8 +80,8 @@ public class GraspTransformer implements ClassFileTransformer {
 
     private byte[] hookClassLoader(ClassLoader loader, byte[] classfileBuffer) {
         try {
-            // 注意: ClassLoader 是由 Bootstrap 加载的，loader 参数通常为 null
-            ClassPool cp = ClassPool.getDefault();
+            // Note: ClassLoader is loaded by Bootstrap, loader parameter is usually null
+            ClassPool cp = ClassPoolManager.getClassPool(null);
             CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
 
             // Hook 核心方法: protected final Class defineClass(String name, byte[] b, int off, int len)
@@ -92,24 +110,106 @@ public class GraspTransformer implements ClassFileTransformer {
             return byteCode;
         } catch (Exception e) {
             // 某些 JVM 实现可能不允许修改核心类，或者 javassist 找不到类
-            System.err.println("[GraRasp] ❌ Failed to hook ClassLoader: " + e.getMessage());
-            // e.printStackTrace(); // 调试时可打开
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook ClassLoader", e);
         }
         return null;
     }
 
-    // ... hookProcessBuilder 保持不变 ...
     private byte[] hookProcessBuilder(ClassLoader loader, byte[] classfileBuffer) {
         try {
-            ClassPool cp = ClassPool.getDefault();
-            if (loader != null) cp.appendClassPath(new LoaderClassPath(loader));
+            ClassPool cp = ClassPoolManager.getClassPool(loader);
             CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
             CtMethod m = cc.getDeclaredMethod("start");
-            m.insertBefore("{ com.grarasp.spy.Spy.check(\"rce\", \"java.lang.ProcessBuilder\", \"start\", $args); }");
+            // 传递命令列表和调用栈
+            String code = "{" +
+                "   StackTraceElement[] stack = Thread.currentThread().getStackTrace();" +
+                "   com.grarasp.spy.Spy.check(\"rce_processbuilder\", \"java.lang.ProcessBuilder\", \"start\", new Object[]{this.command(), stack});" +
+                "}";
+            m.insertBefore(code);
             byte[] byteCode = cc.toBytecode();
             cc.detach();
+            System.out.println("[GraRasp] ✅ Hooked java.lang.ProcessBuilder successfully!");
             return byteCode;
-        } catch (Exception e) { }
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook ProcessBuilder", e);
+        }
+        return null;
+    }
+
+    private byte[] hookRuntime(ClassLoader loader, byte[] classfileBuffer) {
+        try {
+            ClassPool cp = ClassPoolManager.getClassPool(null);
+            CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
+
+            // Hook 所有 exec 方法重载
+            for (CtMethod m : cc.getDeclaredMethods("exec")) {
+                String code = "{" +
+                    "   StackTraceElement[] stack = Thread.currentThread().getStackTrace();" +
+                    "   com.grarasp.spy.Spy.check(\"rce_runtime\", \"java.lang.Runtime\", \"exec\", new Object[]{$1, stack});" +
+                    "}";
+                m.insertBefore(code);
+            }
+
+            byte[] byteCode = cc.toBytecode();
+            cc.detach();
+            System.out.println("[GraRasp] ✅ Hooked java.lang.Runtime.exec() successfully!");
+            return byteCode;
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook Runtime", e);
+        }
+        return null;
+    }
+
+    private byte[] hookInitialContext(ClassLoader loader, byte[] classfileBuffer) {
+        try {
+            ClassPool cp = ClassPoolManager.getClassPool(loader);
+            CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
+
+            // Hook lookup 方法
+            for (CtMethod m : cc.getDeclaredMethods("lookup")) {
+                String code = "{" +
+                    "   StackTraceElement[] stack = Thread.currentThread().getStackTrace();" +
+                    "   com.grarasp.spy.Spy.check(\"jndi_lookup\", \"javax.naming.InitialContext\", \"lookup\", new Object[]{$1, stack});" +
+                    "}";
+                m.insertBefore(code);
+            }
+
+            byte[] byteCode = cc.toBytecode();
+            cc.detach();
+            System.out.println("[GraRasp] ✅ Hooked javax.naming.InitialContext.lookup() successfully!");
+            return byteCode;
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook InitialContext", e);
+        }
+        return null;
+    }
+
+    private byte[] hookScriptEngine(ClassLoader loader, byte[] classfileBuffer) {
+        try {
+            ClassPool cp = ClassPoolManager.getClassPool(loader);
+            CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
+
+            // Hook eval 方法
+            for (CtMethod m : cc.getDeclaredMethods("eval")) {
+                String code = "{" +
+                    "   StackTraceElement[] stack = Thread.currentThread().getStackTrace();" +
+                    "   com.grarasp.spy.Spy.check(\"script_eval\", \"javax.script.ScriptEngine\", \"eval\", new Object[]{$1, stack});" +
+                    "}";
+                m.insertBefore(code);
+            }
+
+            byte[] byteCode = cc.toBytecode();
+            cc.detach();
+            System.out.println("[GraRasp] ✅ Hooked javax.script.ScriptEngine.eval() successfully!");
+            return byteCode;
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook ScriptEngine", e);
+        }
         return null;
     }
 }

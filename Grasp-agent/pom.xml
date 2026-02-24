@@ -14,6 +14,16 @@
     <dependencies>
         <dependency>
             <groupId>com.grarasp</groupId>
+            <artifactId>plugin-weblogic</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.grarasp</groupId>
+            <artifactId>plugin-springboot</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.grarasp</groupId>
             <artifactId>Grasp-core</artifactId>
         </dependency>
         <dependency>

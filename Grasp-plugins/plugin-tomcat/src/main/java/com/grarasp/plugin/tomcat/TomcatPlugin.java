@@ -1,6 +1,8 @@
 package com.grarasp.plugin.tomcat;
 
 import com.grarasp.core.plugin.IPlugin;
+import com.grarasp.core.util.ClassPoolManager;
+import com.grarasp.core.util.ErrorReporter;
 import javassist.*;
 
 import java.io.ByteArrayInputStream;
@@ -25,8 +27,7 @@ public class TomcatPlugin implements IPlugin {
 
     @Override
     public byte[] transform(ClassLoader loader, String className, byte[] classfileBuffer) throws Exception {
-        ClassPool cp = ClassPool.getDefault();
-        if (loader != null) cp.appendClassPath(new LoaderClassPath(loader));
+        ClassPool cp = ClassPoolManager.getClassPool(loader);
         CtClass cc = cp.makeClass(new ByteArrayInputStream(classfileBuffer));
 
         if (TARGET_CONTEXT.equals(className)) {
@@ -69,13 +70,19 @@ public class TomcatPlugin implements IPlugin {
             insertSpy(cc, "addFilterDef", "memshell_filter", "StandardContext");
             insertSpy(cc, "addChild", "memshell_servlet", "StandardContext");
             insertSpy(cc, "addApplicationEventListener", "memshell_listener", "StandardContext");
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook StandardContext", e);
+        }
     }
 
     private void hookStandardPipeline(CtClass cc) {
         try {
             insertSpy(cc, "addValve", "memshell_valve", "StandardPipeline");
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to hook StandardPipeline", e);
+        }
     }
 
     private void hookWsServerContainer(CtClass cc, ClassPool cp) {
@@ -116,6 +123,12 @@ public class TomcatPlugin implements IPlugin {
         try {
             CtMethod m = cc.getDeclaredMethod(methodName);
             m.insertBefore("{ com.grarasp.spy.Spy.check(\"" + checkType + "\", \"" + targetName + "\", \"" + methodName + "\", new Object[]{$0, $1}); }");
-        } catch (Exception e) {}
+        } catch (NotFoundException e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Method not found: " + methodName + " in " + targetName, e);
+        } catch (Exception e) {
+            ErrorReporter.reportError(ErrorReporter.ErrorType.PLUGIN_TRANSFORM,
+                "Failed to insert spy in " + methodName, e);
+        }
     }
 }
