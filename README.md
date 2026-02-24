@@ -1,47 +1,176 @@
-# GraRasp (Java Runtime Application Self-Protection)
+# GraRasp v1.5.0
 
-GraRasp 是一个基于微内核架构的轻量级 Java RASP 防御框架。它通过 Java Agent 技术在运行时对关键类进行字节码插桩，能够实时检测并阻断 RCE、内存马等高危攻击。
+轻量级 Java RASP (Runtime Application Self-Protection) 防御框架，基于 Java Agent 技术实现运行时安全防护。
 
-## 🛡️ 核心功能
+## 核心能力
 
-* **微内核架构**：采用 `Agent` + `SPI` + `Plugin` 设计，核心与插件分离，易于扩展。
-* **Tomcat 内存马防御**：
-    * ✅ Servlet 内存马
-    * ✅ Filter 内存马
-    * ✅ Listener 内存马
-    * ✅ Valve (Pipeline) 内存马
-    * ✅ WebSocket 内存马
+### 内存马防护
+| 类型 | Tomcat | WebLogic | Spring Boot |
+|------|--------|----------|-------------|
+| Filter | ✅ | ✅ | ✅ |
+| Servlet | ✅ | ✅ | ✅ |
+| Listener | ✅ | ✅ | ✅ |
+| Valve | ✅ | - | ✅ |
+| WebSocket | ✅ | - | ✅ |
 
+### 漏洞防护
+- **命令执行**: Runtime.exec / ProcessBuilder 检测，反弹 Shell 识别
+- **JNDI 注入**: Log4j2 漏洞防护，恶意协议拦截 (ldap/rmi/dns)
+- **SpEL 注入**: 表达式注入检测，支持 Unicode/编码绕过识别
+- **反序列化**: ClassLoader 底层 Hook，TemplatesImpl 攻击拦截
 
-## 🏗️ 项目结构
+### 巡检机制
+- 风险评分 (0-100)，分级告警
+- 高风险组件自动清除 (≥80分)
+- 增量扫描，性能优化
+- Webhook 告警推送
 
-* **Grasp-agent**: Java Agent 入口，负责类加载隔离与 SPI 插件分发。
-* **Grasp-core**: 核心逻辑层，包含状态检测算法与安全策略（SpyHandler）。
-* **Grasp-spy**: 极简的探针桥接层，负责将 Hook 点流量导入 Core。
-* **Grasp-plugins**: 插件模块，包含针对 Tomcat、Undertow 等中间件的具体 Hook 实现。
+## 项目结构
 
-## 🚀 快速开始
+```
+GraRasp/
+├── Grasp-agent/          # Agent 入口，类加载隔离
+├── Grasp-core/           # 核心检测逻辑
+│   ├── config/           # 配置管理 (RaspConfig)
+│   ├── detector/         # 检测器 (Command/Jndi/SpEL)
+│   └── util/             # 工具类 (ReflectionCache)
+├── Grasp-spy/            # 探针桥接层
+└── Grasp-plugins/        # 中间件插件
+    ├── plugin-tomcat/    # Tomcat 支持
+    ├── plugin-weblogic/  # WebLogic 支持
+    └── plugin-springboot/# Spring Boot 支持
+```
 
-### 1. 编译构建
-在项目根目录执行 Maven 构建命令：
+## 快速开始
+
+### 1. 编译
+
 ```bash
-mvn clean install
+mvn clean package -DskipTests
 ```
-构建成功后，Agent 包位于：Grasp-agent/target/Grasp-agent.jar
 
-## 2. 启动配置
-在目标 Java 应用（如 Tomcat、SpringBoot）的启动参数中添加：
+产物: `Grasp-agent/target/Grasp-agent.jar`
 
-```Bash
--javaagent:/path/to/Grasp-agent.jar
+### 2. 部署
+
+```bash
+# Tomcat
+java -javaagent:/path/to/Grasp-agent.jar -jar app.jar
+
+# 或修改 catalina.sh
+export JAVA_OPTS="$JAVA_OPTS -javaagent:/path/to/Grasp-agent.jar"
+
+# 指定配置文件
+java -javaagent:/path/to/Grasp-agent.jar -Dgrarasp.config=/path/to/grarasp.yml -jar app.jar
 ```
-## 3. 运行效果
-启动应用时，控制台将输出 GraRasp Logo 及插件加载信息。当检测到攻击（如 WebSocket 内存马注入）时，将输出如下阻断日志：
 
-```Plaintext
-[GraRasp Security Alert] 🚨 Memory Shell Detected!
-Type:    memshell_websocket
-Context: org.apache.catalina.core.StandardContext
-State:   STARTED (Suspicious: Runtime Modification)
-[GraRasp Action] 🚫 Blocked by Security Policy!
+### 3. 配置
+
+创建 `grarasp.yml`:
+
+```yaml
+# 阻断模式: true=拦截+清除, false=仅监控
+block_mode: true
+
+# 巡检配置
+scan:
+  enabled: true
+  interval: 30000  # 毫秒
+
+# 检测规则
+rules:
+  spel: true
+  classloader: true
+  runtime_exec: true
+  jndi: true
+
+# 告警 Webhook
+alert:
+  webhook: http://your-server/alert
+
+# 白名单
+whitelist:
+  components:
+    - myCustomFilter
+  classes:
+    - com.mycompany.
 ```
+
+配置文件查找顺序:
+1. `-Dgrarasp.config=/path/to/grarasp.yml`
+2. `./grarasp.yml`
+3. `./conf/grarasp.yml`
+4. `~/.grarasp/grarasp.yml`
+
+## 运行效果
+
+### 启动日志
+
+```
+[GraRasp] Core initialized v1.5.0. Protection Online.
+[GraRasp] Block mode: true
+[GraRasp] Enhanced Memory Shell Scanner started (interval: 30000ms)
+[GraRasp] ✅ Hooked java.lang.ClassLoader successfully!
+[GraRasp] ✅ Hooked java.lang.Runtime.exec() successfully!
+[GraRasp] ✅ Hooked javax.naming.InitialContext.lookup() successfully!
+```
+
+### 拦截日志
+
+```
+========================================
+[GraRasp] HIGH RISK Memory Shell Detected!
+Type:      Filter
+Name:      evilFilter
+Class:     com.evil.Shell$$Lambda
+Risk:      85/100
+========================================
+[GraRasp] CLEANED Filter: evilFilter
+```
+
+### WebSocket 内存马拦截
+
+```
+========================================
+[GraRasp Security Alert] 🚨 WebSocket MemShell Injection Detected! path=/ws-rce, class=class Test$1
+Type:    WebSocket MemShell
+Action:  Blocked
+========================================
+```
+
+## 风险评分规则
+
+| 特征 | 分值 |
+|------|------|
+| 动态代理类 ($$/$Proxy) | +20 |
+| CGLIB/Enhancer | +15 |
+| 恶意标识 (shell/exploit/payload) | +40 |
+| 已知工具 (behinder/godzilla) | +50 |
+| 匿名类 ($数字) | +10 |
+| 无包名类 | +15 |
+| 非标准 ClassLoader | +15 |
+| TransletClassLoader | +30 |
+| 无 CodeSource | +15 |
+| 继承 AbstractTranslet | +40 |
+
+阈值:
+- **30分**: 低风险告警
+- **60分**: 中高风险告警
+- **80分**: 自动清除 (需 block_mode=true)
+
+## Webhook 告警格式
+
+```json
+{
+  "level": "HIGH RISK",
+  "type": "Filter",
+  "name": "evilFilter",
+  "class": "com.evil.Shell$$Lambda",
+  "risk": 85,
+  "timestamp": 1708765432000
+}
+```
+
+## License
+
+MIT
