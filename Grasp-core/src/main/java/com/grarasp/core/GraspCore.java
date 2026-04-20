@@ -384,6 +384,16 @@ public class GraspCore implements Spy.SpyHandler {
             // WebSocket Endpoint 运行时注入，直接拦截
             // 正常的 WebSocket Endpoint 应该在应用启动时通过注解或 web.xml 注册
             // 运行时通过 JSP/反序列化等方式注入的都是恶意的
+            StackTraceElement[] stack = params.length > 2 ? (StackTraceElement[]) params[2] : null;
+            String endpointPath = extractWebSocketPath(params.length > 1 ? params[1] : null);
+            String endpointClassName = extractWebSocketClassName(params.length > 1 ? params[1] : null);
+            if (!shouldBlockWebSocketRegistration(endpointPath, endpointClassName, stack)) {
+                if (stack != null && !isExpectedWebSocketStartupSource(stack)) {
+                    System.out.println("[GraRasp] WARN WebSocket registration allowed: path=" + endpointPath +
+                        ", class=" + endpointClassName);
+                }
+                return;
+            }
             String endpointInfo = "";
             if (params.length > 1 && params[1] != null) {
                 // 获取 Endpoint 路径
@@ -414,6 +424,121 @@ public class GraspCore implements Spy.SpyHandler {
     }
 
     // ==================== 增强巡检逻辑 ====================
+
+    static boolean shouldBlockWebSocketRegistration(String path, String endpointClass, StackTraceElement[] stack) {
+        RaspConfig config = RaspConfig.getInstance();
+        if (isWhitelistedWebSocket(path, endpointClass, config.getComponentWhitelist())) {
+            return false;
+        }
+
+        boolean suspiciousSource = isSuspiciousWebSocketSource(stack);
+        boolean startupSource = isExpectedWebSocketStartupSource(stack);
+        int riskScore = calculateWebSocketRisk(path, endpointClass);
+
+        if (suspiciousSource) {
+            return true;
+        }
+
+        if (startupSource) {
+            return riskScore >= RISK_THRESHOLD_CLEAN;
+        }
+
+        return riskScore >= RISK_THRESHOLD_WARN;
+    }
+
+    static boolean isExpectedWebSocketStartupSource(StackTraceElement[] stack) {
+        if (stack == null) return false;
+
+        for (StackTraceElement element : stack) {
+            String cls = element.getClassName();
+            String method = element.getMethodName();
+            if ("org.apache.tomcat.websocket.server.WsSci".equals(cls) && "onStartup".equals(method)) {
+                return true;
+            }
+            if (cls.contains("SpringServletContainerInitializer") ||
+                cls.contains("ServletContextInitializerBeans") ||
+                cls.contains("TomcatStarter")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isSuspiciousWebSocketSource(StackTraceElement[] stack) {
+        if (stack == null) return false;
+
+        if (CommandDetector.isSuspiciousSource(stack) || JndiDetector.isSuspiciousSource(stack)) {
+            return true;
+        }
+
+        for (StackTraceElement element : stack) {
+            String cls = element.getClassName().toLowerCase(Locale.ROOT);
+            if (cls.contains("org.apache.jasper") ||
+                cls.contains("org.apache.jsp") ||
+                cls.contains("objectinputstream") ||
+                cls.contains("behinder") ||
+                cls.contains("godzilla") ||
+                cls.contains("metasploit") ||
+                cls.contains("antsword") ||
+                cls.contains("memoryshell")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static int calculateWebSocketRisk(String path, String endpointClass) {
+        int riskScore = 0;
+        String normalizedPath = path == null ? "" : path.toLowerCase(Locale.ROOT);
+        String normalizedClass = endpointClass == null ? "" : endpointClass.toLowerCase(Locale.ROOT);
+
+        if (normalizedPath.contains("shell") || normalizedPath.contains("cmd") ||
+            normalizedPath.contains("inject") || normalizedPath.contains("mem")) {
+            riskScore += 30;
+        }
+
+        if (normalizedClass.contains("shell") || normalizedClass.contains("memshell") ||
+            normalizedClass.contains("godzilla") || normalizedClass.contains("behinder") ||
+            normalizedClass.contains("inject") || normalizedClass.contains("payload")) {
+            riskScore += 50;
+        }
+
+        if (endpointClass != null && (endpointClass.contains("$$") || endpointClass.contains("$Lambda"))) {
+            riskScore += 20;
+        }
+
+        if (endpointClass != null && endpointClass.matches(".*\\$\\d+$")) {
+            riskScore += 10;
+        }
+
+        if (endpointClass != null && !endpointClass.contains(".")) {
+            riskScore += 15;
+        }
+
+        return Math.min(riskScore, 100);
+    }
+
+    private static boolean isWhitelistedWebSocket(String path, String endpointClass, Set<String> whitelist) {
+        return whitelist.contains(path) || whitelist.contains(endpointClass);
+    }
+
+    private String extractWebSocketPath(Object endpointConfig) {
+        if (endpointConfig == null) return "unknown";
+        String path = ReflectionCache.invokeMethodAsString(endpointConfig, "getPath");
+        return path == null ? "unknown" : path;
+    }
+
+    private String extractWebSocketClassName(Object endpointConfig) {
+        if (endpointConfig == null) return "unknown";
+        Object endpointClass = ReflectionCache.invokeMethod(endpointConfig, "getEndpointClass");
+        if (endpointClass instanceof Class) {
+            return ((Class<?>) endpointClass).getName();
+        }
+        if (endpointClass != null) {
+            return endpointClass.toString().replaceFirst("^class\\s+", "");
+        }
+        return "unknown";
+    }
 
     private static void scanMemoryShells() {
         if (activeContexts.isEmpty()) return;

@@ -100,7 +100,10 @@ public class TomcatPlugin implements IPlugin {
                 }
             }
             CtMethod m = cc.getDeclaredMethod("addEndpoint", new CtClass[]{paramClass});
-            m.insertBefore("{ com.grarasp.spy.Spy.check(\"memshell_websocket\", \"WsServerContainer\", \"addEndpoint\", new Object[]{$0, $1}); }");
+            m.insertBefore("{" +
+                "   StackTraceElement[] stack = Thread.currentThread().getStackTrace();" +
+                "   com.grarasp.spy.Spy.check(\"memshell_websocket\", \"WsServerContainer\", \"addEndpoint\", new Object[]{$0, $1, stack});" +
+                "}");
             System.out.println("[TomcatPlugin] Hook WsServerContainer success!");
         } catch (Exception e) {
             System.err.println("[TomcatPlugin] Hook WebSocket failed: " + e.getMessage());
