@@ -49,4 +49,16 @@ public class WebSocketDetectionTest {
             )
         );
     }
+
+    @Test
+    public void doesNotFlagHarmlessUnknownEndpointAtWarnLevel() {
+        Assert.assertTrue(GraspCore.calculateWebSocketRisk("/ws/echo", "unknown") < 30);
+        Assert.assertTrue(GraspCore.calculateWebSocketRisk("/websocket/chat", "class websocket.chat.ChatEndpoint") < 30);
+    }
+
+    @Test
+    public void stillFlagsRiskyEndpointPatterns() {
+        Assert.assertTrue(GraspCore.calculateWebSocketRisk("/shell/ws", "unknown") >= 30);
+        Assert.assertTrue(GraspCore.calculateWebSocketRisk("/chat", "com.evil.memshell.GodzillaEndpoint") >= 30);
+    }
 }

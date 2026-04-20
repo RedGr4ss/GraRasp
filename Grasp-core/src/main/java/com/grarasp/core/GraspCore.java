@@ -490,7 +490,8 @@ public class GraspCore implements Spy.SpyHandler {
     static int calculateWebSocketRisk(String path, String endpointClass) {
         int riskScore = 0;
         String normalizedPath = path == null ? "" : path.toLowerCase(Locale.ROOT);
-        String normalizedClass = endpointClass == null ? "" : endpointClass.toLowerCase(Locale.ROOT);
+        String normalizedClassName = normalizeComponentClassName(endpointClass);
+        String normalizedClass = normalizedClassName.toLowerCase(Locale.ROOT);
 
         if (normalizedPath.contains("shell") || normalizedPath.contains("cmd") ||
             normalizedPath.contains("inject") || normalizedPath.contains("mem")) {
@@ -503,39 +504,55 @@ public class GraspCore implements Spy.SpyHandler {
             riskScore += 50;
         }
 
-        if (endpointClass != null && (endpointClass.contains("$$") || endpointClass.contains("$Lambda"))) {
+        if (normalizedClassName.contains("$$") || normalizedClassName.contains("$Lambda")) {
             riskScore += 20;
         }
 
-        if (endpointClass != null && endpointClass.matches(".*\\$\\d+$")) {
+        if (normalizedClassName.matches(".*\\$\\d+$")) {
             riskScore += 10;
         }
 
-        if (endpointClass != null && !endpointClass.contains(".")) {
-            riskScore += 15;
+        if (normalizedClassName.isEmpty()) {
+            riskScore += 5;
+        } else if (!normalizedClassName.contains(".")) {
+            riskScore += 5;
         }
 
         return Math.min(riskScore, 100);
     }
 
     private static boolean isWhitelistedWebSocket(String path, String endpointClass, Set<String> whitelist) {
-        return whitelist.contains(path) || whitelist.contains(endpointClass);
+        String normalizedClassName = normalizeComponentClassName(endpointClass);
+        return whitelist.contains(path) || whitelist.contains(endpointClass) ||
+            (!normalizedClassName.isEmpty() && whitelist.contains(normalizedClassName));
     }
 
-    private String extractWebSocketPath(Object endpointConfig) {
+    static String normalizeComponentClassName(String className) {
+        if (className == null) {
+            return "";
+        }
+        String normalized = className.trim().replaceFirst("^class\\s+", "");
+        if (normalized.isEmpty() || "unknown".equalsIgnoreCase(normalized) || "null".equalsIgnoreCase(normalized)) {
+            return "";
+        }
+        return normalized;
+    }
+
+    private static String extractWebSocketPath(Object endpointConfig) {
         if (endpointConfig == null) return "unknown";
         String path = ReflectionCache.invokeMethodAsString(endpointConfig, "getPath");
         return path == null ? "unknown" : path;
     }
 
-    private String extractWebSocketClassName(Object endpointConfig) {
+    private static String extractWebSocketClassName(Object endpointConfig) {
         if (endpointConfig == null) return "unknown";
         Object endpointClass = ReflectionCache.invokeMethod(endpointConfig, "getEndpointClass");
         if (endpointClass instanceof Class) {
             return ((Class<?>) endpointClass).getName();
         }
         if (endpointClass != null) {
-            return endpointClass.toString().replaceFirst("^class\\s+", "");
+            String normalized = normalizeComponentClassName(endpointClass.toString());
+            return normalized.isEmpty() ? "unknown" : normalized;
         }
         return "unknown";
     }
@@ -723,40 +740,23 @@ public class GraspCore implements Spy.SpyHandler {
     private static void analyzeWebSocketEndpoint(String path, Object endpointConfig, Object wsContainer, Set<String> whitelist) {
         try {
             // 获取 Endpoint 类
-            Object endpointClass = ReflectionCache.invokeMethod(endpointConfig, "getEndpointClass");
-            String className = endpointClass != null ? endpointClass.toString() : "unknown";
+            String className = extractWebSocketClassName(endpointConfig);
 
             // 跳过白名单
-            if (whitelist.contains(path) || whitelist.contains(className)) {
+            if (isWhitelistedWebSocket(path, className, whitelist)) {
                 return;
             }
 
             // 分析可疑特征
-            int riskScore = 0;
+            int riskScore = calculateWebSocketRisk(path, className);
 
             // 匿名类或 Lambda
-            if (className.contains("$$") || className.contains("$Lambda") || className.matches(".*\\$\\d+$")) {
-                riskScore += 40;
-            }
 
             // 无包名
-            if (!className.contains(".") || className.startsWith("class ")) {
-                riskScore += 30;
-            }
 
             // 可疑路径
-            String lowerPath = path.toLowerCase();
-            if (lowerPath.contains("shell") || lowerPath.contains("cmd") || lowerPath.contains("exec") ||
-                lowerPath.contains("rce") || lowerPath.contains("hack") || lowerPath.contains("backdoor")) {
-                riskScore += 50;
-            }
 
             // 可疑类名
-            String lowerClass = className.toLowerCase();
-            if (lowerClass.contains("shell") || lowerClass.contains("exploit") || lowerClass.contains("payload") ||
-                lowerClass.contains("behinder") || lowerClass.contains("godzilla")) {
-                riskScore += 50;
-            }
 
             if (riskScore >= RISK_THRESHOLD_WARN) {
                 SuspiciousComponent comp = new SuspiciousComponent("WebSocket", path, className, endpointConfig, wsContainer, riskScore);
@@ -888,15 +888,16 @@ public class GraspCore implements Spy.SpyHandler {
     /**
      * 计算风险评分（0-100）
      */
-    private static int calculateRiskScore(String type, String name, String className, Object instance) {
+    static int calculateRiskScore(String type, String name, String className, Object instance) {
         int score = 0;
+        String normalizedClassName = normalizeComponentClassName(className);
 
         // 1. 类名特征检测 (+10-50)
-        if (className != null) {
-            String lower = className.toLowerCase();
+        if (!normalizedClassName.isEmpty()) {
+            String lower = normalizedClassName.toLowerCase(Locale.ROOT);
 
             // 动态代理类
-            if (className.contains("$$") || className.contains("$Proxy")) {
+            if (normalizedClassName.contains("$$") || normalizedClassName.contains("$Proxy")) {
                 score += 20;
             }
             // CGLIB 代理
@@ -916,15 +917,15 @@ public class GraspCore implements Spy.SpyHandler {
                 score += 50;
             }
             // 匿名类
-            if (className.matches(".*\\$\\d+$")) {
+            if (normalizedClassName.matches(".*\\$\\d+$")) {
                 score += 10;
             }
             // 无包名类
-            if (!className.contains(".")) {
-                score += 15;
+            if (!normalizedClassName.contains(".")) {
+                score += 5;
             }
             // Base64 编码类名
-            if (className.matches(".*[A-Za-z0-9+/]{20,}.*")) {
+            if (normalizedClassName.matches(".*[A-Za-z0-9+/]{20,}.*")) {
                 score += 15;
             }
         }
