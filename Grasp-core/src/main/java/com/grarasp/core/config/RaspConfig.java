@@ -1,45 +1,50 @@
 package com.grarasp.core.config;
 
-import java.io.*;
-import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * RASP 配置管理器
- * 支持从 YAML 文件加载配置，提供默认值
+ * RASP configuration manager.
+ * Uses a lightweight YAML-like parser to avoid introducing runtime dependencies.
  */
 public class RaspConfig {
 
     private static volatile RaspConfig INSTANCE;
     private static final String CONFIG_FILE = "grarasp.yml";
 
-    // 扫描配置
     private boolean scanEnabled = true;
     private int scanInterval = 30000;
 
-    // 阻断模式
     private boolean blockMode = true;
 
-    // 检测规则开关
     private boolean spelDetectionEnabled = true;
     private boolean classLoaderHookEnabled = true;
     private boolean runtimeExecHookEnabled = true;
     private boolean jndiHookEnabled = true;
 
-    // 白名单
     private Set<String> componentWhitelist = new HashSet<>();
     private Set<String> classWhitelist = new HashSet<>();
 
-    // SpEL 危险关键字
     private Set<String> spelDangerousClasses = new HashSet<>();
     private Set<String> spelDangerousMethods = new HashSet<>();
 
-    // 日志配置
     private String logLevel = "INFO";
     private String logFile = null;
 
-    // 告警配置
     private String alertWebhook = null;
 
     private RaspConfig() {
@@ -58,9 +63,6 @@ public class RaspConfig {
         return INSTANCE;
     }
 
-    /**
-     * 重新加载配置（支持热更新）
-     */
     public static void reload() {
         synchronized (RaspConfig.class) {
             INSTANCE = new RaspConfig();
@@ -69,9 +71,7 @@ public class RaspConfig {
     }
 
     private void initDefaults() {
-        // 默认组件白名单
         componentWhitelist.addAll(Arrays.asList(
-            // Tomcat
             "Tomcat WebSocket (JSR356) Filter",
             "ServletRequest Context Filter",
             "WsFilter",
@@ -81,7 +81,6 @@ public class RaspConfig {
             "org.apache.catalina.authenticator.NonLoginAuthenticator",
             "org.apache.catalina.authenticator.BasicAuthenticator",
             "org.apache.catalina.core.StandardContext$ContextFilterMaps",
-            // Spring
             "org.springframework.web.context.ContextLoaderListener",
             "org.springframework.web.util.IntrospectorCleanupListener",
             "characterEncodingFilter",
@@ -92,13 +91,11 @@ public class RaspConfig {
             "org.springframework.web.filter.HiddenHttpMethodFilter",
             "org.springframework.web.filter.FormContentFilter",
             "org.springframework.web.filter.RequestContextFilter",
-            // WebLogic
             "JspServlet",
             "FileServlet",
             "weblogic.servlet.internal.ServletStubImpl"
         ));
 
-        // 默认类白名单
         classWhitelist.addAll(Arrays.asList(
             "org.springframework",
             "org.apache.tomcat",
@@ -107,7 +104,6 @@ public class RaspConfig {
             "com.oracle."
         ));
 
-        // SpEL 危险类
         spelDangerousClasses.addAll(Arrays.asList(
             "java.lang.Runtime",
             "java.lang.ProcessBuilder",
@@ -133,7 +129,6 @@ public class RaspConfig {
             "jdk.internal.misc.Unsafe"
         ));
 
-        // SpEL 危险方法
         spelDangerousMethods.addAll(Arrays.asList(
             "exec",
             "getRuntime",
@@ -154,20 +149,15 @@ public class RaspConfig {
     }
 
     private void loadConfig() {
-        // 1. 尝试从系统属性获取配置文件路径
         String configPath = System.getProperty("grarasp.config");
-
-        // 2. 尝试从环境变量获取
         if (configPath == null) {
             configPath = System.getenv("GRARASP_CONFIG");
         }
 
-        // 3. 尝试从当前目录加载
         File configFile = null;
         if (configPath != null) {
             configFile = new File(configPath);
         } else {
-            // 尝试多个位置
             String[] paths = {
                 CONFIG_FILE,
                 "conf/" + CONFIG_FILE,
@@ -175,9 +165,9 @@ public class RaspConfig {
                 System.getProperty("user.home") + "/.grarasp/" + CONFIG_FILE
             };
             for (String path : paths) {
-                File f = new File(path);
-                if (f.exists() && f.isFile()) {
-                    configFile = f;
+                File file = new File(path);
+                if (file.exists() && file.isFile()) {
+                    configFile = file;
                     break;
                 }
             }
@@ -195,77 +185,87 @@ public class RaspConfig {
         }
     }
 
-    /**
-     * 简易 YAML 解析器（不依赖第三方库）
-     */
     private void parseYaml(File file) throws IOException {
         Map<String, Object> config = new LinkedHashMap<>();
         List<String> currentPath = new ArrayList<>();
-        int[] indentStack = new int[20];
-        int stackDepth = 0;
+        Deque<Integer> indentStack = new ArrayDeque<>();
 
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+        try (BufferedReader reader = new BufferedReader(
+            new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                // 跳过空行和注释
                 String trimmed = line.trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                     continue;
                 }
 
-                // 计算缩进
                 int indent = 0;
                 for (char c : line.toCharArray()) {
-                    if (c == ' ') indent++;
-                    else break;
-                }
-
-                // 调整路径深度
-                while (stackDepth > 0 && indent <= indentStack[stackDepth - 1]) {
-                    currentPath.remove(currentPath.size() - 1);
-                    stackDepth--;
-                }
-
-                // 解析键值对
-                if (trimmed.contains(":")) {
-                    int colonIndex = trimmed.indexOf(':');
-                    String key = trimmed.substring(0, colonIndex).trim();
-                    String value = trimmed.substring(colonIndex + 1).trim();
-
-                    if (value.isEmpty()) {
-                        // 嵌套对象
-                        currentPath.add(key);
-                        indentStack[stackDepth++] = indent;
+                    if (c == ' ') {
+                        indent++;
                     } else {
-                        // 简单值
-                        String fullKey = String.join(".", currentPath) + (currentPath.isEmpty() ? "" : ".") + key;
-                        config.put(fullKey, parseValue(value));
+                        break;
                     }
-                } else if (trimmed.startsWith("- ")) {
-                    // 数组元素
-                    String value = trimmed.substring(2).trim();
+                }
+
+                while (!indentStack.isEmpty() && indent <= indentStack.peek()) {
+                    currentPath.remove(currentPath.size() - 1);
+                    indentStack.pop();
+                }
+
+                if (trimmed.startsWith("- ")) {
                     String fullKey = String.join(".", currentPath);
-                    @SuppressWarnings("unchecked")
-                    List<String> list = (List<String>) config.computeIfAbsent(fullKey, k -> new ArrayList<String>());
-                    list.add(value);
+                    List<String> list = getOrCreateList(config, fullKey);
+                    list.add(trimmed.substring(2).trim());
+                    continue;
+                }
+
+                int colonIndex = trimmed.indexOf(':');
+                if (colonIndex < 0) {
+                    continue;
+                }
+
+                String key = trimmed.substring(0, colonIndex).trim();
+                String value = trimmed.substring(colonIndex + 1).trim();
+                if (value.isEmpty()) {
+                    currentPath.add(key);
+                    indentStack.push(indent);
+                } else {
+                    String fullKey = String.join(".", currentPath);
+                    if (!fullKey.isEmpty()) {
+                        fullKey += ".";
+                    }
+                    config.put(fullKey + key, parseValue(value));
                 }
             }
         }
 
-        // 应用配置
         applyConfig(config);
     }
 
+    private List<String> getOrCreateList(Map<String, Object> config, String key) {
+        Object existing = config.get(key);
+        if (existing instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<String> list = (List<String>) existing;
+            return list;
+        }
+        List<String> list = new ArrayList<>();
+        config.put(key, list);
+        return list;
+    }
+
     private Object parseValue(String value) {
-        // 去除引号
         if ((value.startsWith("\"") && value.endsWith("\"")) ||
             (value.startsWith("'") && value.endsWith("'"))) {
             return value.substring(1, value.length() - 1);
         }
-        // 布尔值
-        if ("true".equalsIgnoreCase(value)) return true;
-        if ("false".equalsIgnoreCase(value)) return false;
-        // 数字
+        if ("true".equalsIgnoreCase(value)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(value)) {
+            return false;
+        }
         try {
             if (value.contains(".")) {
                 return Double.parseDouble(value);
@@ -276,66 +276,28 @@ public class RaspConfig {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private void applyConfig(Map<String, Object> config) {
-        // 扫描配置
-        if (config.containsKey("scan.enabled")) {
-            scanEnabled = (Boolean) config.get("scan.enabled");
-        }
-        if (config.containsKey("scan.interval")) {
-            scanInterval = ((Number) config.get("scan.interval")).intValue();
-        }
+        scanEnabled = getBoolean(config, "scan.enabled", scanEnabled);
+        scanInterval = Math.max(1000, getInt(config, "scan.interval", scanInterval));
 
-        // 阻断模式
-        if (config.containsKey("block_mode")) {
-            blockMode = (Boolean) config.get("block_mode");
-        }
+        blockMode = getBoolean(config, "block_mode", blockMode);
 
-        // 检测规则
-        if (config.containsKey("rules.spel")) {
-            spelDetectionEnabled = (Boolean) config.get("rules.spel");
-        }
-        if (config.containsKey("rules.classloader")) {
-            classLoaderHookEnabled = (Boolean) config.get("rules.classloader");
-        }
-        if (config.containsKey("rules.runtime_exec")) {
-            runtimeExecHookEnabled = (Boolean) config.get("rules.runtime_exec");
-        }
-        if (config.containsKey("rules.jndi")) {
-            jndiHookEnabled = (Boolean) config.get("rules.jndi");
-        }
+        spelDetectionEnabled = getBoolean(config, "rules.spel", spelDetectionEnabled);
+        classLoaderHookEnabled = getBoolean(config, "rules.classloader", classLoaderHookEnabled);
+        runtimeExecHookEnabled = getBoolean(config, "rules.runtime_exec", runtimeExecHookEnabled);
+        jndiHookEnabled = getBoolean(config, "rules.jndi", jndiHookEnabled);
 
-        // 白名单
-        if (config.containsKey("whitelist.components")) {
-            componentWhitelist.addAll((List<String>) config.get("whitelist.components"));
-        }
-        if (config.containsKey("whitelist.classes")) {
-            classWhitelist.addAll((List<String>) config.get("whitelist.classes"));
-        }
+        componentWhitelist.addAll(getStringList(config, "whitelist.components"));
+        classWhitelist.addAll(getStringList(config, "whitelist.classes"));
 
-        // SpEL 危险类/方法
-        if (config.containsKey("spel.dangerous_classes")) {
-            spelDangerousClasses.addAll((List<String>) config.get("spel.dangerous_classes"));
-        }
-        if (config.containsKey("spel.dangerous_methods")) {
-            spelDangerousMethods.addAll((List<String>) config.get("spel.dangerous_methods"));
-        }
+        spelDangerousClasses.addAll(getStringList(config, "spel.dangerous_classes"));
+        spelDangerousMethods.addAll(getStringList(config, "spel.dangerous_methods"));
 
-        // 日志配置
-        if (config.containsKey("log.level")) {
-            logLevel = (String) config.get("log.level");
-        }
-        if (config.containsKey("log.file")) {
-            logFile = (String) config.get("log.file");
-        }
-
-        // 告警配置
-        if (config.containsKey("alert.webhook")) {
-            alertWebhook = (String) config.get("alert.webhook");
-        }
+        logLevel = getString(config, "log.level", logLevel);
+        logFile = getString(config, "log.file", logFile);
+        alertWebhook = getString(config, "alert.webhook", alertWebhook);
     }
 
-    // Getters
     public boolean isScanEnabled() { return scanEnabled; }
     public int getScanInterval() { return scanInterval; }
     public boolean isBlockMode() { return blockMode; }
@@ -351,9 +313,6 @@ public class RaspConfig {
     public String getLogFile() { return logFile; }
     public String getAlertWebhook() { return alertWebhook; }
 
-    /**
-     * 检查类名是否在白名单中
-     */
     public boolean isClassWhitelisted(String className) {
         if (className == null) return false;
         for (String prefix : classWhitelist) {
@@ -362,5 +321,57 @@ public class RaspConfig {
             }
         }
         return false;
+    }
+
+    private boolean getBoolean(Map<String, Object> config, String key, boolean defaultValue) {
+        Object value = config.get(key);
+        if (value == null) return defaultValue;
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        if (value instanceof String) {
+            return Boolean.parseBoolean((String) value);
+        }
+        System.err.println("[GraRasp] Invalid boolean config for " + key + ": " + value);
+        return defaultValue;
+    }
+
+    private int getInt(Map<String, Object> config, String key, int defaultValue) {
+        Object value = config.get(key);
+        if (value == null) return defaultValue;
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Integer.parseInt((String) value);
+            } catch (NumberFormatException e) {
+                // fall through
+            }
+        }
+        System.err.println("[GraRasp] Invalid integer config for " + key + ": " + value);
+        return defaultValue;
+    }
+
+    private String getString(Map<String, Object> config, String key, String defaultValue) {
+        Object value = config.get(key);
+        return value == null ? defaultValue : String.valueOf(value);
+    }
+
+    private List<String> getStringList(Map<String, Object> config, String key) {
+        Object value = config.get(key);
+        if (value == null) {
+            return Collections.emptyList();
+        }
+        if (value instanceof List) {
+            List<?> raw = (List<?>) value;
+            List<String> result = new ArrayList<>(raw.size());
+            for (Object item : raw) {
+                result.add(String.valueOf(item));
+            }
+            return result;
+        }
+        System.err.println("[GraRasp] Invalid list config for " + key + ": " + value);
+        return Collections.emptyList();
     }
 }

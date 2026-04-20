@@ -2,6 +2,7 @@ package com.grarasp.core.util;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -21,7 +22,7 @@ public class ReflectionCache {
     public static Method getMethod(Object target, String methodName, Class<?>... paramTypes) {
         if (target == null) return null;
 
-        String key = target.getClass().getName() + "#" + methodName;
+        String key = buildMethodKey(target.getClass(), methodName, paramTypes);
         return methodCache.computeIfAbsent(key, k -> {
             try {
                 Method m = target.getClass().getMethod(methodName, paramTypes);
@@ -122,5 +123,18 @@ public class ReflectionCache {
     public static void clearAll() {
         methodCache.clear();
         fieldCache.clear();
+    }
+
+    private static String buildMethodKey(Class<?> targetClass, String methodName, Class<?>... paramTypes) {
+        StringBuilder key = new StringBuilder(targetClass.getName())
+            .append('#')
+            .append(methodName)
+            .append('(');
+
+        if (paramTypes != null && paramTypes.length > 0) {
+            key.append(Arrays.toString(paramTypes));
+        }
+
+        return key.append(')').toString();
     }
 }
