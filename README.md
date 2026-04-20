@@ -2,13 +2,6 @@
 
 GraRasp 是一个面向 Java Web 场景的轻量级 RASP（Runtime Application Self-Protection）项目，基于 `Java Agent + Javassist` 在运行时完成类插桩、危险行为检测、内存马扫描与阻断。
 
-这个项目适合作为毕业设计或安全研究原型，重点展示以下能力：
-
-- 运行时拦截 `Runtime.exec`、`ProcessBuilder`、JNDI lookup、ScriptEngine、Spring SpEL 等高风险入口
-- 扫描 Tomcat / WebLogic 上下文中的可疑 Filter、Servlet、Listener、Valve、WebSocket Endpoint
-- 根据风险评分输出告警，并在阻断模式下抛出 `SecurityException`
-- 通过插件机制适配不同中间件
-
 ## 核心能力
 
 ### 1. 漏洞利用检测
@@ -53,14 +46,6 @@ GraRasp/
     ├── plugin-weblogic/
     └── plugin-springboot/
 ```
-
-## 工作流程
-
-1. JVM 通过 `-javaagent` 加载 `Grasp-agent`
-2. `AgentLauncher` 初始化 `GraspCore` 并注册 `ClassFileTransformer`
-3. `GraspTransformer` 对核心 JDK 类和中间件类进行插桩
-4. 插桩代码在运行时调用 `Spy.check(...)`
-5. `GraspCore` 根据事件类型执行检测、告警、阻断或后台扫描
 
 ## 构建
 
