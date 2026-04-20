@@ -1,94 +1,121 @@
 # GraRasp v1.5.0
 
-轻量级 Java RASP (Runtime Application Self-Protection) 防御框架，基于 Java Agent 技术实现运行时安全防护。
+GraRasp 是一个面向 Java Web 场景的轻量级 RASP（Runtime Application Self-Protection）项目，基于 `Java Agent + Javassist` 在运行时完成类插桩、危险行为检测、内存马扫描与阻断。
+
+这个项目适合作为毕业设计或安全研究原型，重点展示以下能力：
+
+- 运行时拦截 `Runtime.exec`、`ProcessBuilder`、JNDI lookup、ScriptEngine、Spring SpEL 等高风险入口
+- 扫描 Tomcat / WebLogic 上下文中的可疑 Filter、Servlet、Listener、Valve、WebSocket Endpoint
+- 根据风险评分输出告警，并在阻断模式下抛出 `SecurityException`
+- 通过插件机制适配不同中间件
 
 ## 核心能力
 
-### 内存马防护
+### 1. 漏洞利用检测
+
+- 命令执行检测：拦截 `Runtime.exec` 和 `ProcessBuilder.start`
+- JNDI 注入检测：识别 `ldap://`、`rmi://`、`dns://` 等危险 lookup
+- SpEL 注入检测：支持 Unicode、拼接绕过、反射链等模式识别
+- ScriptEngine 执行检测：识别脚本中的危险 Java 调用
+- 类加载检测：在 `ClassLoader#defineClass` 阶段分析可疑字节码来源
+
+### 2. 内存马扫描与清理
+
+当前支持以下组件的运行时发现与风险分析：
+
 | 类型 | Tomcat | WebLogic | Spring Boot |
 |------|--------|----------|-------------|
-| Filter | ✅ | ✅ | ✅ |
-| Servlet | ✅ | ✅ | ✅ |
-| Listener | ✅ | ✅ | ✅ |
-| Valve | ✅ | - | ✅ |
-| WebSocket | ✅ | - | ✅ |
+| Filter | Yes | Yes | Yes |
+| Servlet | Yes | Yes | Yes |
+| Listener | Yes | Yes | Yes |
+| Valve | Yes | No | Yes |
+| WebSocket | Yes | No | Yes |
 
-### 漏洞防护
-- **命令执行**: Runtime.exec / ProcessBuilder 检测，反弹 Shell 识别
-- **JNDI 注入**: Log4j2 漏洞防护，恶意协议拦截 (ldap/rmi/dns)
-- **SpEL 注入**: 表达式注入检测，支持 Unicode/编码绕过识别
-- **反序列化**: ClassLoader 底层 Hook，TemplatesImpl 攻击拦截
+扫描阶段会结合类名、类加载器、反射痕迹、已知工具特征等因素计算风险分值。高风险对象在 `block_mode=true` 时会尝试自动清理。
 
-### 巡检机制
-- 风险评分 (0-100)，分级告警
-- 高风险组件自动清除 (≥80分)
-- 增量扫描，性能优化
-- Webhook 告警推送
+### 3. 可扩展插件机制
+
+GraRasp 通过 `ServiceLoader` 发现插件，不同中间件的 Hook 逻辑解耦在独立模块中：
+
+- `plugin-tomcat`
+- `plugin-weblogic`
+- `plugin-springboot`
 
 ## 项目结构
 
-```
+```text
 GraRasp/
-├── Grasp-agent/          # Agent 入口，类加载隔离
-├── Grasp-core/           # 核心检测逻辑
-│   ├── config/           # 配置管理 (RaspConfig)
-│   ├── detector/         # 检测器 (Command/Jndi/SpEL)
-│   └── util/             # 工具类 (ReflectionCache)
-├── Grasp-spy/            # 探针桥接层
-└── Grasp-plugins/        # 中间件插件
-    ├── plugin-tomcat/    # Tomcat 支持
-    ├── plugin-weblogic/  # WebLogic 支持
-    └── plugin-springboot/# Spring Boot 支持
+├── Grasp-agent/        # Agent 入口与字节码转换器
+├── Grasp-core/         # 核心检测、扫描、配置、工具类
+├── Grasp-spy/          # 业务类与核心逻辑之间的桥接层
+└── Grasp-plugins/      # 中间件适配插件
+    ├── plugin-tomcat/
+    ├── plugin-weblogic/
+    └── plugin-springboot/
 ```
 
-## 快速开始
+## 工作流程
 
-### 1. 编译
+1. JVM 通过 `-javaagent` 加载 `Grasp-agent`
+2. `AgentLauncher` 初始化 `GraspCore` 并注册 `ClassFileTransformer`
+3. `GraspTransformer` 对核心 JDK 类和中间件类进行插桩
+4. 插桩代码在运行时调用 `Spy.check(...)`
+5. `GraspCore` 根据事件类型执行检测、告警、阻断或后台扫描
+
+## 构建
 
 ```bash
 mvn clean package -DskipTests
 ```
 
-产物: `Grasp-agent/target/Grasp-agent.jar`
+主要产物：
 
-### 2. 部署
+```text
+Grasp-agent/target/Grasp-agent.jar
+```
+
+## 使用方式
+
+### 1. 直接附加到 Java 应用
 
 ```bash
-# Tomcat
 java -javaagent:/path/to/Grasp-agent.jar -jar app.jar
+```
 
-# 或修改 catalina.sh
-export JAVA_OPTS="$JAVA_OPTS -javaagent:/path/to/Grasp-agent.jar"
+### 2. 指定配置文件
 
-# 指定配置文件
+```bash
 java -javaagent:/path/to/Grasp-agent.jar -Dgrarasp.config=/path/to/grarasp.yml -jar app.jar
 ```
 
-### 3. 配置
+### 3. Tomcat 场景
 
-创建 `grarasp.yml`:
+可在 `catalina.sh` 或启动参数中加入：
+
+```bash
+export JAVA_OPTS="$JAVA_OPTS -javaagent:/path/to/Grasp-agent.jar"
+```
+
+## 配置示例
+
+创建 `grarasp.yml`：
 
 ```yaml
-# 阻断模式: true=拦截+清除, false=仅监控
 block_mode: true
 
-# 巡检配置
 scan:
   enabled: true
-  interval: 30000  # 毫秒
+  interval: 30000
 
-# 检测规则
 rules:
   spel: true
   classloader: true
   runtime_exec: true
   jndi: true
 
-# 告警 Webhook
 alert:
   webhook: http://your-server/alert
 
-# 白名单
 whitelist:
   components:
     - myCustomFilter
@@ -96,28 +123,30 @@ whitelist:
     - com.mycompany.
 ```
 
-配置文件查找顺序:
+配置文件查找顺序：
+
 1. `-Dgrarasp.config=/path/to/grarasp.yml`
 2. `./grarasp.yml`
 3. `./conf/grarasp.yml`
-4. `~/.grarasp/grarasp.yml`
+4. `./config/grarasp.yml`
+5. `~/.grarasp/grarasp.yml`
 
-## 运行效果
+## 运行示例
 
 ### 启动日志
 
-```
+```text
 [GraRasp] Core initialized v1.5.0. Protection Online.
 [GraRasp] Block mode: true
 [GraRasp] Enhanced Memory Shell Scanner started (interval: 30000ms)
-[GraRasp] ✅ Hooked java.lang.ClassLoader successfully!
-[GraRasp] ✅ Hooked java.lang.Runtime.exec() successfully!
-[GraRasp] ✅ Hooked javax.naming.InitialContext.lookup() successfully!
+[GraRasp] Hooked java.lang.ClassLoader successfully!
+[GraRasp] Hooked java.lang.Runtime.exec() successfully!
+[GraRasp] Hooked javax.naming.InitialContext.lookup() successfully!
 ```
 
-### 拦截日志
+### 检测日志
 
-```
+```text
 ========================================
 [GraRasp] HIGH RISK Memory Shell Detected!
 Type:      Filter
@@ -128,35 +157,36 @@ Risk:      85/100
 [GraRasp] CLEANED Filter: evilFilter
 ```
 
-### WebSocket 内存马拦截
+### 阻断日志
 
-```
+```text
 ========================================
-[GraRasp Security Alert] 🚨 WebSocket MemShell Injection Detected! path=/ws-rce, class=class Test$1
+[GraRasp Security Alert] WebSocket MemShell Injection Detected! path=/ws-rce, class=class Test$1
 Type:    WebSocket MemShell
 Action:  Blocked
 ========================================
 ```
 
-## 风险评分规则
+## 风险评分示例
 
 | 特征 | 分值 |
 |------|------|
-| 动态代理类 ($$/$Proxy) | +20 |
-| CGLIB/Enhancer | +15 |
-| 恶意标识 (shell/exploit/payload) | +40 |
-| 已知工具 (behinder/godzilla) | +50 |
-| 匿名类 ($数字) | +10 |
+| 动态代理类 `$$` / `$Proxy` | +20 |
+| CGLIB / Enhancer | +15 |
+| 恶意关键词 `shell` / `payload` / `exploit` | +40 |
+| 已知工具特征 `behinder` / `godzilla` | +50 |
+| 匿名内部类 | +10 |
 | 无包名类 | +15 |
-| 非标准 ClassLoader | +15 |
-| TransletClassLoader | +30 |
-| 无 CodeSource | +15 |
-| 继承 AbstractTranslet | +40 |
+| 非标准类加载器 | +15 |
+| `TransletClassLoader` | +30 |
+| `CodeSource` 缺失 | +15 |
+| 继承 `AbstractTranslet` | +40 |
 
-阈值:
-- **30分**: 低风险告警
-- **60分**: 中高风险告警
-- **80分**: 自动清除 (需 block_mode=true)
+默认处理阈值：
+
+- `>= 30`：低风险告警
+- `>= 60`：中高风险告警
+- `>= 80`：自动清理（需要 `block_mode=true`）
 
 ## Webhook 告警格式
 
@@ -170,6 +200,12 @@ Action:  Blocked
   "timestamp": 1708765432000
 }
 ```
+
+## 当前局限
+
+- 规则主要基于启发式检测，仍可能存在误报和漏报
+- 不同中间件版本的内部实现差异较大，兼容性仍需更多实测
+- 当前测试覆盖仍偏基础，更适合原型验证而非直接生产落地
 
 ## License
 

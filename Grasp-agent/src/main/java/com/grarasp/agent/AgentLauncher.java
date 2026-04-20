@@ -5,11 +5,12 @@ import com.grarasp.core.GraspCore;
 import java.io.File;
 import java.lang.instrument.Instrumentation;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.jar.JarFile;
 
 /**
- * Agent 入口类 - 修复版
- * 关键修复：主动重转换 ClassLoader，确保 defineClass Hook 生效
+ * Agent entry point.
  */
 public class AgentLauncher {
 
@@ -20,33 +21,28 @@ public class AgentLauncher {
         System.out.println(" / /_/ /   |/ /___/ ___ |_/ /_/ / / /  / / /|  /__  __/");
         System.out.println(" \\____/_/|_/_____/_/  |_/___/___/_/  /_/_/ |_/   /_/   ");
         System.out.println("                                                       ");
-        System.out.println("                 GraRasp Agent V1.0.3                  ");
+        System.out.println("                 GraRasp Agent V1.5.0                  ");
 
         try {
             File agentJarFile = getAgentJarFile();
             if (agentJarFile != null) {
-                // System.out.println("[GraRasp] Append to bootstrap: " + agentJarFile.getAbsolutePath());
                 inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJarFile));
             } else {
                 System.err.println("[GraRasp] Error: Can not find agent jar file!");
             }
 
-            // 1. 初始化核心模块
             GraspCore.init();
-
-            // 2. 注册字节码转换器 (注意：第二个参数 true 表示支持重转换)
             inst.addTransformer(new GraspTransformer(), true);
 
-            // 3. [核心修复] 强制重转换核心类
-            // 因为 ClassLoader 在 Agent 启动前已加载，必须显式触发 retransform 才能 Hook 到 defineClass
-            System.out.println("[GraRasp] Retransforming java.lang.ClassLoader...");
-            inst.retransformClasses(java.lang.ClassLoader.class);
-
-            // 如果需要防御 ProcessBuilder RCE，最好也重转换一下 (防止它也被提前加载)
-            inst.retransformClasses(java.lang.ProcessBuilder.class);
+            // Retransform already loaded core classes to reduce startup blind spots.
+            retransformLoadedClasses(inst,
+                "java.lang.ClassLoader",
+                "java.lang.ProcessBuilder",
+                "java.lang.Runtime",
+                "javax.naming.InitialContext",
+                "javax.script.AbstractScriptEngine");
 
             System.out.println("[GraRasp] Install Success! Core classes hooked.");
-
         } catch (Throwable e) {
             System.err.println("[GraRasp] Install Failed!");
             e.printStackTrace();
@@ -63,5 +59,40 @@ public class AgentLauncher {
             e.printStackTrace();
         }
         return null;
+    }
+
+    private static void retransformLoadedClasses(Instrumentation inst, String... classNames) {
+        List<Class<?>> loadedTargets = new ArrayList<>();
+
+        for (String className : classNames) {
+            boolean found = false;
+            for (Class<?> loadedClass : inst.getAllLoadedClasses()) {
+                if (className.equals(loadedClass.getName())) {
+                    found = true;
+                    if (inst.isModifiableClass(loadedClass)) {
+                        loadedTargets.add(loadedClass);
+                    } else {
+                        System.err.println("[GraRasp] Skip non-modifiable class: " + className);
+                    }
+                    break;
+                }
+            }
+
+            if (!found) {
+                System.out.println("[GraRasp] Class not loaded yet, hook will apply on first load: " + className);
+            }
+        }
+
+        if (loadedTargets.isEmpty()) {
+            return;
+        }
+
+        System.out.println("[GraRasp] Retransforming loaded core classes: " + loadedTargets.size());
+        try {
+            inst.retransformClasses(loadedTargets.toArray(new Class<?>[0]));
+        } catch (Exception e) {
+            System.err.println("[GraRasp] Retransforming loaded core classes failed");
+            e.printStackTrace();
+        }
     }
 }
